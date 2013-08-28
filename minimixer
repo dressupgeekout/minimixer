@@ -1,0 +1,126 @@
+#!/usr/bin/env ruby
+# minimixer -- Christian Koch <cfkoch@sdf.lonestar.org>
+
+require 'curses'
+
+class Minimixer
+  PLAY_CMD = "ogg123 -dnas -qr"
+  ALPHABET = "qwertyuiopasdfghjklzxcvbnm"
+  ALPHABET_CAPS = ALPHABET.upcase
+  PLAYING_STRING = ">>"
+  PAUSING_STRING = "||"
+
+  def initialize(config_path)
+    @config = parse_config(config_path)
+    @pids = Array.new(@config.length)
+    setup_curses
+    refresh
+  end
+
+  def go!
+    main_loop
+    shutdown
+  end
+
+  private
+
+  def shutdown
+    cleanup_curses
+    exit 0
+  end
+
+  def main_loop
+    ch = ""
+
+    while ch != "!"
+      ch = Curses.getch
+
+      if ch == "!"
+        shutdown!
+        break
+      end
+
+      # Ignore if not a letter, or not a letter "in use".
+      next if not ch.respond_to?(:downcase)
+      next if not ALPHABET.include?(ch.downcase)
+      next if not ALPHABET[0, @config.length].include?(ch.downcase)
+
+      i = index_for_key(ch)
+
+      # Lower-case commands play samples.
+      if ch == ch.downcase
+        next if @pids[i]
+        cmd = %Q(#{PLAY_CMD} #{file_for_key(ch)})
+        @pids[i] = fork { exec(cmd) }
+        Process.detach(@pids[i])
+      end
+
+      # Upper-case commands stop samples.
+      if ch == ch.upcase
+        next if !@pids[i]
+        Process.kill("HUP", @pids[i])
+        @pids[i] = nil
+      end
+
+      refresh
+    end
+  end
+
+  # Forcibly kill all child processes, then try to shut down normally.
+  def shutdown!
+    @pids.compact.each { |pid| Process.kill("HUP", pid) }
+    shutdown
+  end
+
+  def index_for_key(key)
+    return ALPHABET.index(key.downcase)
+  end
+
+  def file_for_key(key)
+    return @config[index_for_key(key)]
+  end
+
+  # XXX It would be more performant to update only the line that needs to be
+  # updated, rather than redrawing everything as we currently do.
+  def refresh
+    Curses.setpos(0, 0)
+
+    @config.each_with_index do |path, i|
+      Curses.attron(Curses::A_STANDOUT)
+      Curses.addstr(ALPHABET_CAPS[i])
+      Curses.attroff(Curses::A_STANDOUT)
+      Curses.addstr(" ")
+      Curses.addstr(PLAYING_STRING) if not @pids[i]
+      Curses.addstr(PAUSING_STRING) if @pids[i]
+      Curses.addstr(" " + path + "\n")
+    end
+
+    Curses.refresh
+  end
+
+  def parse_config(config_path)
+    return File.read(config_path).split("\n")
+  end
+
+  def setup_curses
+    Curses.init_screen
+    Curses.noecho
+    Curses.cbreak
+    Curses.curs_set(0)
+  end
+
+  def cleanup_curses
+    Curses.close_screen
+  end
+end
+
+#####
+
+config_path = ARGV.shift
+
+if config_path
+  Minimixer.new(config_path).go!
+else
+  $stderr.puts "#{File.basename($0)}: need a song config"
+  exit 1
+end
